@@ -43,7 +43,7 @@ docker compose start
 
 `docker compose down` removes containers while retaining volumes. Do not add `--volumes` unless you intend to erase stored data. Before upgrading an existing installation, back up PostgreSQL and the media volume, stop the application services, then run `docker compose up -d --build`. Container restarts alone do not pick up code changes.
 
-After installing `requirements-dev.txt` on the host, run `python scripts/compose_smoke.py` to check a real upload, queued image transformation and download. Add `--restart` to also restart the API and worker and verify the output persists. The probe retains its small sample job and files for inspection, but revokes its temporary API key afterward. The restart option briefly interrupts the local API.
+After installing `requirements.txt` on the host, run `python scripts/compose_smoke.py` to check a real upload, queued image transformation and download. Add `--restart` to also restart the API and worker and verify the output persists. The probe retains its small sample job and files for inspection, but revokes its temporary API key afterward. The restart option briefly interrupts the local API.
 
 ## Run locally without application containers
 
@@ -58,7 +58,7 @@ uvicorn app.main:app --reload
 
 Start Redis on localhost:6379 (for Docker Desktop, `docker compose up -d redis`). Run `python -m app.dispatcher` in one terminal and `rq worker --worker-class rq.worker.SimpleWorker` in another. Set `REDIS_URL` for the dispatcher and pass the same URL to the worker with `--url` if using a non-default Redis. The dispatcher republishes queued jobs every 30 seconds; workers atomically claim them, so duplicate messages are ignored. Upload raw bytes with `PUT` to the returned path, including the `X-API-Key` header. Outputs are saved in `data/storage/outputs/<job_id>/<attempt>/`.
 
-Install test dependencies with `pip install -r requirements-dev.txt`. Run `python -m unittest discover -s tests -v` for the local test. To run the Redis integration test separately, set `TEST_REDIS_URL=redis://localhost:6379/0`, `DATABASE_URL` and `LOCAL_STORAGE_PATH` to isolated test locations, then run `python -m unittest discover -s tests -p test_redis_integration.py -v`. The integration test creates records and output files in those locations.
+Install all application and test dependencies with `pip install -r requirements.txt`. Run `python -m unittest discover -s tests -v` for the local test. To run the Redis integration test separately, set `TEST_REDIS_URL=redis://localhost:6379/0`, `DATABASE_URL` and `LOCAL_STORAGE_PATH` to isolated test locations, then run `python -m unittest discover -s tests -p test_redis_integration.py -v`. The integration test creates records and output files in those locations.
 
 The Redis tests use separate worker processes. One test terminates a worker after it claims a job and advances its database timestamp to simulate timeout expiry. Another injects a temporary failure, waits through a short retry delay, then verifies that a second worker finishes the job.
 
