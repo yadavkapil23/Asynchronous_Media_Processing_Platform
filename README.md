@@ -15,6 +15,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for system diagrams, request flows, data 
 - Job states include `queued`, `processing`, `retrying`, `completed`, and `failed`
 - Verified image uploads with immutable accepted sources
 - Signed webhooks with durable delivery history and retries
+- Redis-backed request rate limiting and Prometheus-compatible metrics
 
 This development backend supports local filesystem storage and an RQ worker backed by Redis. Local upload URLs are API paths that require the API key. The current processing scope is still images, with resize, thumbnail, conversion and metadata operations.
 
@@ -32,7 +33,35 @@ Save the API key printed by the account command. The API is available at http://
 
 Application containers run as an unprivileged user. The API and processing worker share the `media-data` volume. PostgreSQL and Redis retain their own volumes. Compose uses PostgreSQL and container hostnames independently of host-only database or Redis settings in `.env`. It preserves the existing PostgreSQL volume but does not copy files from host `data/storage` or migrate a host SQLite database. Existing host media must be copied into the media volume before those records can serve files from containers.
 
-The development ports bind to localhost. Public deployment, TLS and production credentials still need separate configuration. Keep the default database password limited to local development. Image builds exclude `.env`, local data, database backups and tests.
+The development ports bind to localhost. For a server deployment, set `DOMAIN` to a DNS name pointing at the host and run the included Caddy service. Caddy obtains and renews a certificate from the public ACME service and forwards HTTPS traffic to the API. Open ports 80 and 443 in the firewall. Keep the database password limited to deployment secrets. Image builds exclude `.env`, local data, database backups and tests.
+
+The API applies a fixed-window request limit to `/v1` routes. The default is 120 requests per 60 seconds per API key, or per client IP before authentication. Redis shares the counter across API containers. If Redis is unavailable, the API uses a process-local fallback. Configure `RATE_LIMIT_REQUESTS` and `RATE_LIMIT_WINDOW_SECONDS`. Rate-limited responses return HTTP 429 with `Retry-After`, `X-RateLimit-Limit` and `X-RateLimit-Remaining` headers.
+
+`GET /metrics` returns lightweight Prometheus-compatible counters for total requests, response classes, method totals and cumulative request duration. Protect it behind an internal network or metrics gateway before exposing it publicly. `GET /health` remains a process liveness check.
+
+## Production HTTPS
+
+Create a DNS A or AAAA record for the deployment host, set `DOMAIN` in `.env`, then start the HTTPS profile with `docker compose --profile https up -d --build`. The Caddy container listens on ports 80 and 443, redirects HTTP to HTTPS, obtains the certificate for `DOMAIN`, adds security headers and proxies to the API over the private Compose network. Caddy stores certificates in the named `caddy-data` volume. Back up that volume only if you need to preserve the ACME account state; certificates can also be reissued after DNS and firewall access are restored.
+
+Do not use the sample PostgreSQL password on a public server. Set a strong database password and update the Compose connection URL and PostgreSQL environment together. Set a random `WEBHOOK_MASTER_SECRET` and keep it stable across restarts. Restrict ports 5432 and 6379 to the private container network, and keep `/metrics` off the public internet.
+
+## Backups and restore testing
+
+The backup script saves a compressed PostgreSQL dump and the shared media volume. Run it from a Linux deployment host with Docker access.
+
+```bash
+BACKUP_DIR=/srv/forge/backups ./scripts/backup.sh
+```
+
+Keep backups outside the application host or copy them to encrypted remote storage. The backup directory is ignored by Git. The restore test creates a temporary PostgreSQL database, imports the dump, extracts media into the shared volume and checks the Alembic revision. Run it on a separate maintenance host or during a maintenance window because it replaces the media volume contents.
+
+```bash
+BACKUP_DIR=/srv/forge/backups ./scripts/restore_test.sh \
+  /srv/forge/backups/forge-YYYYMMDDTHHMMSSZ.sql.gz \
+  /srv/forge/backups/media-YYYYMMDDTHHMMSSZ.tar.gz
+```
+
+Schedule `backup.sh` with the host scheduler. A ready-to-copy daily cron entry is in `scripts/backup.cron.example`. Keep several dated generations and test a restore at least monthly. A database dump without the matching media volume is incomplete. Back up `.env` secrets through a secret manager rather than placing them in the backup directory.
 
 ```powershell
 docker compose logs --tail 100 api worker dispatcher webhooks
@@ -68,7 +97,7 @@ New databases require `alembic upgrade head` before starting the API or workers.
 
 Older SQLite databases created by the previous prototype already have the initial tables but no migration history. Back up the database first, verify that its schema matches `migrations/versions/0001_initial.py`, then run `alembic stamp 0001_initial` once, followed by `alembic upgrade head`. Do not stamp an empty or mismatched database. PostgreSQL starts empty and does not require stamping. This migration changes schema only; it does not copy existing SQLite data to PostgreSQL.
 
-This basic dispatcher can accumulate duplicate queue messages during a backlog, and handles at most 100 queued jobs per pass. It is suitable for development; a production dispatcher needs bounded deduplication, fairness and monitoring.
+The dispatcher can accumulate duplicate queue messages during a backlog, and handles at most 100 queued jobs per pass. CI runs the application tests and Compose configuration checks. Production still needs an external metrics collector, alert rules, bounded queue deduplication and fairness for heavy backlogs.
 
 Once a job completes, list outputs at `GET /v1/jobs/{job_id}/outputs` and download them using the returned paths. Metadata operations produce JSON files. Register a webhook endpoint before including its URL in a job.
 
@@ -96,7 +125,7 @@ Only single-frame PNG, JPEG and WebP images are accepted. Files must be at most 
 
 Accepted bytes are saved at `sources/<upload_id>/<sha256>`. The worker checks that checksum before processing. Local PUT accepts content once and returns 409 on replacement. Concurrent uploads publish only one source. A failed local PUT may be corrected using the same pending ticket.
 
-Validation is not a malware scan or a resource quota. Apply request rate limits, per-account storage quotas and worker resource limits before offering public access. Keep the storage directory private to the service.
+Validation is not a malware scan or a storage quota. Apply per-account storage quotas and worker resource limits before offering public access. Keep the storage directory private to the service.
 
 ## Webhooks
 
