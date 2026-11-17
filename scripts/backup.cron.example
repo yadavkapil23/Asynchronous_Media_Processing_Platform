@@ -1,0 +1,2 @@
+# Run daily at 02:30 UTC and retain the latest 14 backup generations.
+30 2 * * * cd /srv/forge && BACKUP_DIR=/srv/forge/backups ./scripts/backup.sh && find /srv/forge/backups -type f -mtime +14 -delete
