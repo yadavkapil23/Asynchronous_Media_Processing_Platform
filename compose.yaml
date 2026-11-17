@@ -13,6 +13,8 @@ x-app: &app
     JOB_RETRY_MAX_SECONDS: ${JOB_RETRY_MAX_SECONDS:-300}
     JOB_TIMEOUT_SECONDS: ${JOB_TIMEOUT_SECONDS:-600}
     JOB_RECOVERY_GRACE_SECONDS: ${JOB_RECOVERY_GRACE_SECONDS:-120}
+    RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-120}
+    RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
   volumes:
     - media-data:/srv/forge/data/storage
   logging:
@@ -46,6 +48,22 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      api:
+        condition: service_healthy
   worker:
     <<: *app
     command: ["rq", "worker", "--url", "redis://redis:6379/0", "default"]
@@ -91,6 +109,8 @@ services:
       retries: 10
 
 volumes:
+  caddy-data:
+  caddy-config:
   media-data:
   redis-data:
   postgres-data:
