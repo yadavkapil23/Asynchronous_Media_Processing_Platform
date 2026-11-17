@@ -1,0 +1,37 @@
+name: Forge CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+        env:
+          TEST_REDIS_URL: redis://127.0.0.1:6379/0
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: python -c "from pathlib import Path; import secrets; p=Path('.env'); p.write_text(p.read_text().replace('WEBHOOK_MASTER_SECRET=', 'WEBHOOK_MASTER_SECRET='+secrets.token_hex(32)))"
+      - run: docker compose config --quiet
+      - run: docker compose build
