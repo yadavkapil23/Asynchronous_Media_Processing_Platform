@@ -16,6 +16,7 @@ from .models import ApiKey, Job, JobAttempt, Upload, User, WebhookDelivery, Webh
 from .accounts import hash_key
 from .schemas import AttemptResponse, EndpointRequest, JobRequest, JobResponse, UploadRequest, UploadResponse, as_utc
 from . import uploads, webhooks
+from .monitoring import enforce_rate_limit, metrics_text
 
 
 Path(settings.local_storage_path).mkdir(parents=True, exist_ok=True)
@@ -48,7 +49,12 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/v1/uploads", response_model=UploadResponse, dependencies=[Depends(require_api_key)])
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(content=metrics_text(), media_type="text/plain; version=0.0.4")
+
+
+@app.post("/v1/uploads", response_model=UploadResponse, dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 def create_upload(payload: UploadRequest, db: Session = Depends(get_db), user: User = Depends(require_api_key)) -> UploadResponse:
     upload_id = f"upl_{uuid4().hex[:16]}"
     key = f"staging/{upload_id}"
@@ -68,7 +74,7 @@ def create_upload(payload: UploadRequest, db: Session = Depends(get_db), user: U
                           expires_in=None)
 
 
-@app.put("/v1/uploads/{upload_id}/content", dependencies=[Depends(require_api_key)])
+@app.put("/v1/uploads/{upload_id}/content", dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 async def upload_content(upload_id: str, request: Request, db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     upload = db.get(Upload, upload_id)
     if upload is None or upload.user_id != user.id:
@@ -84,7 +90,7 @@ async def upload_content(upload_id: str, request: Request, db: Session = Depends
     return {"upload_id": accepted.id, "size": accepted.size, "status": accepted.status}
 
 
-@app.post("/v1/webhooks", status_code=201)
+@app.post("/v1/webhooks", status_code=201, dependencies=[Depends(enforce_rate_limit)])
 def register_webhook(payload: EndpointRequest, response: Response, db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     url = str(payload.url)
     endpoint = WebhookEndpoint(id=f"wh_{uuid4().hex}", user_id=user.id, url=url)
@@ -105,7 +111,7 @@ def register_webhook(payload: EndpointRequest, response: Response, db: Session =
     return {"id": endpoint.id, "url": url, "signing_secret": secret}
 
 
-@app.get("/v1/webhooks")
+@app.get("/v1/webhooks", dependencies=[Depends(enforce_rate_limit)])
 def list_webhooks(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
                   db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     endpoints = db.scalars(select(WebhookEndpoint).where(WebhookEndpoint.user_id == user.id)
@@ -113,7 +119,7 @@ def list_webhooks(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, g
     return [{"id": e.id, "url": e.url, "enabled": e.enabled} for e in endpoints]
 
 
-@app.delete("/v1/webhooks/{endpoint_id}")
+@app.delete("/v1/webhooks/{endpoint_id}", dependencies=[Depends(enforce_rate_limit)])
 def disable_webhook(endpoint_id: str, db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     result = db.execute(update(WebhookEndpoint).where(
         WebhookEndpoint.id == endpoint_id, WebhookEndpoint.user_id == user.id,
@@ -127,7 +133,7 @@ def disable_webhook(endpoint_id: str, db: Session = Depends(get_db), user: User 
     return {"id": endpoint_id, "enabled": False}
 
 
-@app.post("/v1/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(require_api_key)])
+@app.post("/v1/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 def create_job(
     payload: JobRequest,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -177,7 +183,7 @@ def owned_job(db: Session, job_id: str, user_id: str) -> Job:
     return job
 
 
-@app.get("/v1/jobs/dead-letters", response_model=list[JobResponse])
+@app.get("/v1/jobs/dead-letters", response_model=list[JobResponse], dependencies=[Depends(enforce_rate_limit)])
 def list_dead_letters(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -193,13 +199,13 @@ def list_dead_letters(
     return db.scalars(query).all()
 
 
-@app.get("/v1/jobs/{job_id}", response_model=JobResponse, dependencies=[Depends(require_api_key)])
+@app.get("/v1/jobs/{job_id}", response_model=JobResponse, dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 def get_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(require_api_key)) -> JobResponse:
     job = owned_job(db, job_id, user.id)
     return JobResponse.model_validate(job, from_attributes=True)
 
 
-@app.get("/v1/jobs/{job_id}/attempts", response_model=list[AttemptResponse])
+@app.get("/v1/jobs/{job_id}/attempts", response_model=list[AttemptResponse], dependencies=[Depends(enforce_rate_limit)])
 def list_job_attempts(
     job_id: str,
     limit: int = Query(50, ge=1, le=100),
@@ -217,7 +223,7 @@ def list_job_attempts(
     return db.scalars(query).all()
 
 
-@app.get("/v1/jobs/{job_id}/webhooks")
+@app.get("/v1/jobs/{job_id}/webhooks", dependencies=[Depends(enforce_rate_limit)])
 def webhook_history(job_id: str, limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0),
                     db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     owned_job(db, job_id, user.id)
@@ -236,7 +242,7 @@ def webhook_history(job_id: str, limit: int = Query(50, ge=1, le=100), offset: i
              "deliveries": attempts[e.id]} for e in events]
 
 
-@app.post("/v1/jobs/{job_id}/retry", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
+@app.post("/v1/jobs/{job_id}/retry", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(enforce_rate_limit)])
 def retry_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(require_api_key)) -> JobResponse:
     result = db.execute(
         update(Job)
@@ -251,7 +257,7 @@ def retry_job(job_id: str, db: Session = Depends(get_db), user: User = Depends(r
     return JobResponse.model_validate(job, from_attributes=True)
 
 
-@app.get("/v1/jobs/{job_id}/outputs", dependencies=[Depends(require_api_key)])
+@app.get("/v1/jobs/{job_id}/outputs", dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 def list_outputs(job_id: str, db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     job = owned_job(db, job_id, user.id)
     if job.status != "completed":
@@ -262,7 +268,7 @@ def list_outputs(job_id: str, db: Session = Depends(get_db), user: User = Depend
     return {"outputs": [{"name": p.name, "url": f"/v1/jobs/{job.id}/outputs/{p.name}"} for p in sorted(directory.iterdir()) if p.is_file()]}
 
 
-@app.get("/v1/jobs/{job_id}/outputs/{filename}", dependencies=[Depends(require_api_key)])
+@app.get("/v1/jobs/{job_id}/outputs/{filename}", dependencies=[Depends(enforce_rate_limit), Depends(require_api_key)])
 def download_output(job_id: str, filename: str, db: Session = Depends(get_db), user: User = Depends(require_api_key)):
     job = db.get(Job, job_id)
     if job is None or job.user_id != user.id or job.status != "completed":
