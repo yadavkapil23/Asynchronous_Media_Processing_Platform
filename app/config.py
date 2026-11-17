@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=3, ge=1)
     job_retry_base_seconds: int = Field(default=30, ge=1)
     job_retry_max_seconds: int = Field(default=300, ge=1)
+    rate_limit_requests: int = Field(default=120, ge=1)
+    rate_limit_window_seconds: int = Field(default=60, ge=1)
     webhook_master_secret: SecretStr = SecretStr("")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
