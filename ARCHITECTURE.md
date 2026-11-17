@@ -77,6 +77,8 @@ Account email is an administrative identifier. There is no public signup, email 
 
 The public `/health` route is a basic liveness check. It does not verify database connectivity, Redis connectivity, worker availability or storage capacity. `/docs` exposes the interactive API documentation.
 
+The API applies a fixed-window limiter to `/v1` requests. Redis keys use the current time window and API key, with client IP used before authentication. Each API container can fall back to local counters during a Redis outage, which preserves availability but loses cross-container enforcement until Redis returns. `/metrics` exposes lightweight Prometheus-compatible counters. It is intended for an internal metrics collector and should be protected at the deployment boundary when the service is public.
+
 ## 3. Upload lifecycle
 
 ```mermaid
@@ -470,7 +472,7 @@ Dead letters, processing attempts, endpoints and webhook history support `limit`
 | Shared local storage | Simple operation without an external object store | Multi-host scaling requires coordinated shared storage and its own failure strategy |
 | SQLite option | Lightweight local development | PostgreSQL is preferable for concurrent container services |
 
-There is no exactly-once processing or exactly-once notification promise. The design combines repeated dispatch, conditional claims, attempt fencing and receiver deduplication to tolerate common interruptions. A completed media job can coexist with a failed webhook event.
+There is no exactly-once processing or exactly-once notification promise. The design combines repeated dispatch, conditional claims, attempt fencing and receiver deduplication to tolerate common interruptions. A completed media job can coexist with a failed webhook event. Rate limiting protects the API request surface, while queue and worker capacity still require operational monitoring.
 
 ## 13. Verification and unfinished work
 
@@ -488,8 +490,8 @@ The Redis tests require `TEST_REDIS_URL`; without it those three tests are skipp
 
 The implemented backend is a working local MVP. The following are still open engineering items:
 
-- Monitoring, aggregate metrics and failure alerts.
-- Request rate limits, per-account storage quotas and broader resource controls.
+- External monitoring dashboards, alert rules and log aggregation.
+- Per-account storage quotas and broader resource controls.
 - Bounded queue deduplication and fairness during heavy backlogs.
 - Automated CI execution and scheduled backup/cleanup jobs, including restore drills.
 - Manual webhook event replay and endpoint signing-secret rotation.
